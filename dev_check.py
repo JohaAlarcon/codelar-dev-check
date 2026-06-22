@@ -90,7 +90,11 @@ META_DOC = 80.0          # % de mis QA/Done con docs completas
 META_VENCIDAS = 15.0     # % de mis no-terminadas vencidas (máximo)
 META_ROUNDS = 1.0        # rounds de QA promedio (máximo)
 RATIO_OK = (70.0, 120.0)  # ratio gastado/estimado saludable
-TIS_MAX = {"to do": 10.0, "in progress": 10.0, "qa": 3.0, "merge to dev/test": 3.0}
+# Tiempo-en-estado por ROL: cada quien se mide solo en los estados que controla.
+# El dev no es responsable de mover tareas fuera de QA (eso es del QA tester).
+QA_IDS = {"89342644", "156068535"}   # Juan M., José F. — perfiles QA
+DEV_TIS_MAX = {"to do": 10.0, "in progress": 10.0, "merge to dev/test": 3.0}
+QA_TIS_MAX = {"qa": 3.0}
 SAT_TASKS = 15
 SAT_HOURS = 80.0
 SAT_PROJECTS = 3
@@ -338,6 +342,9 @@ def _mark(ok: bool) -> str:
 # ── Análisis personal (determinístico) ────────────────────────────────────────
 def analyze_me(now: datetime, headers: dict, config: dict, me: dict) -> dict:
     my_id = me["id"]
+    is_qa = my_id in QA_IDS
+    role = "QA" if is_qa else "Dev"
+    tis_max = QA_TIS_MAX if is_qa else DEV_TIS_MAX   # cada rol se mide en sus estados
     now_ms = now.timestamp() * 1000
     today_local = datetime.now().date()
     mine = []  # (task, project)
@@ -434,7 +441,7 @@ def analyze_me(now: datetime, headers: dict, config: dict, me: dict) -> dict:
     tis_bulk = fetch_tis_bulk(list(nondone_tasks.keys()), headers)
     for tid, (t, pname) in nondone_tasks.items():
         st = t.get("status", {}).get("status", "").lower()
-        if st not in TIS_MAX:
+        if st not in tis_max:   # solo los estados que controla este rol
             continue
         days = 0.0
         tis = tis_bulk.get(tid)
@@ -445,9 +452,9 @@ def analyze_me(now: datetime, headers: dict, config: dict, me: dict) -> dict:
             start_ms = int(t.get("date_last_status_change") or 0) or int(t.get("date_created") or 0)
             if start_ms:
                 days = round((now_ms - start_ms) / 86400000.0, 1)
-        if days > TIS_MAX[st]:
+        if days > tis_max[st]:
             tis_violators.append({"id": tid, "name": t["name"], "proj": pname,
-                                  "status": t["status"]["status"], "days": days, "max": TIS_MAX[st]})
+                                  "status": t["status"]["status"], "days": days, "max": tis_max[st]})
     tis_violators.sort(key=lambda x: x["days"], reverse=True)
 
     # Señales de saturación
@@ -462,6 +469,8 @@ def analyze_me(now: datetime, headers: dict, config: dict, me: dict) -> dict:
     return {
         "generated_at": now.isoformat(),
         "me": me,
+        "role": role,
+        "tis_max": tis_max,
         "proys": sorted(proys),
         "pulso": pulso,
         "est_total": round(est_total, 1),
@@ -589,10 +598,11 @@ def build_report(d: dict, today_str: str) -> str:
         R.append("Todas tus tareas en curso están estimadas. ✅")
     R.append("")
 
-    R.append("#### Tareas estancadas (exceden el tiempo máximo en su estado)")
+    maxes = " · ".join(f"{k.upper()} ≤{int(v)}d" for k, v in d["tis_max"].items())
+    R.append(f"#### Tareas estancadas en los estados que controlas ({d['role']})")
     R.append("")
     if d["tis_violators"]:
-        R.append("Máximos: TO DO/IN PROGRESS ≤10d · QA ≤3d · Merge→Dev ≤3d.")
+        R.append(f"Máximos para tu rol ({d['role']}): {maxes}.")
         R.append("")
         R.append("```")
         hh = f"{'ID':<11} {'Tarea':<34} {'Proy':<8} {'Estado':<16} {'Días':>6} {'Máx':>5}"
