@@ -92,9 +92,11 @@ META_ROUNDS = 1.0        # rounds de QA promedio (máximo)
 RATIO_OK = (70.0, 120.0)  # ratio gastado/estimado saludable
 # Tiempo-en-estado por ROL: cada quien se mide solo en los estados que controla.
 # El dev no es responsable de mover tareas fuera de QA (eso es del QA tester).
-QA_IDS = {"89342644", "156068535"}   # Juan M., José F. — perfiles QA
+QA_TEAM = {"89342644": "Juan M.", "156068535": "José F."}   # perfiles QA (id -> nombre)
+QA_IDS = set(QA_TEAM)
 DEV_TIS_MAX = {"to do": 10.0, "in progress": 10.0, "merge to dev/test": 3.0}
 QA_TIS_MAX = {"qa": 3.0}
+QA_QUEUE_MAX = 5            # cola de QA que indica cuello de botella
 SAT_TASKS = 15
 SAT_HOURS = 80.0
 SAT_PROJECTS = 3
@@ -669,6 +671,194 @@ def build_analysis_context(report_text: str, d: dict, today: str) -> str:
     ])
 
 
+# ── Vista QA (filtra por cola/assignee, no por Owner) ─────────────────────────
+def analyze_qa(now: datetime, headers: dict, config: dict, me: dict) -> dict:
+    """Análisis para un perfil QA: su cola de revisión, estancadas, tareas no
+    testeables (sin QA Instructions), hallazgos (rounds) generados y tiempo en QA."""
+    my_id = me["id"]
+    now_ms = now.timestamp() * 1000
+    queue, no_qa_inst, tasks_with_rounds = [], [], []
+    tracked_qa_h = 0.0
+    proys = set()
+    qa_total_sprint = 0
+
+    for pname, pconf in config["projects"].items():
+        for t in fetch_all_tasks(pconf["active"]["id"], headers):
+            st = t.get("status", {}).get("status", "").lower()
+            if st in STATUS_OPEN:
+                continue
+            assignee_ids = {str(a.get("id")) for a in t.get("assignees", [])}
+            if st in STATUS_QA:
+                qa_total_sprint += 1
+                if my_id in assignee_ids:
+                    proys.add(pname)
+                    qa_inst = get_cf_val(t, CF["QA_INST"]) or ""
+                    has_qa = isinstance(qa_inst, str) and len(qa_inst.strip()) >= QA_INST_MIN_CHARS
+                    queue.append({"id": t["id"], "name": t["name"], "proj": pname, "has_qa": has_qa, "days": 0.0})
+                    if not has_qa:
+                        no_qa_inst.append({"id": t["id"], "name": t["name"], "proj": pname})
+            # Tiempo registrado en tareas "Revisión integral de QA" asignadas a mí
+            if "revisión integral" in t.get("name", "").lower() and my_id in assignee_ids:
+                tracked_qa_h += float((t.get("time_spent") or 0) / 3600000.0)
+            # Tareas con rounds>0 (para atribuir hallazgos por comentarios)
+            rounds_raw = get_cf_val(t, CF["ROUNDS"]) or {}
+            rounds_val = int((rounds_raw.get("current", 0) if isinstance(rounds_raw, dict) else rounds_raw) or 0)
+            if rounds_val > 0:
+                tasks_with_rounds.append((t, rounds_val))
+
+    # Días en QA para mi cola (time_in_status)
+    tis = fetch_tis_bulk([q["id"] for q in queue], headers)
+    for q in queue:
+        info = tis.get(q["id"])
+        if info:
+            by_min = info.get("current_status", {}).get("total_time", {}).get("by_minute", 0)
+            q["days"] = round(float(by_min) / 1440.0, 1)
+    queue.sort(key=lambda x: x["days"], reverse=True)
+    estancadas = [q for q in queue if q["days"] > QA_TIS_MAX["qa"]]
+
+    # Hallazgos (rounds) atribuidos a mí: el QA con más comentarios en la tarea
+    my_rounds = 0
+    for t, rv in tasks_with_rounds:
+        comments = api_get(f"task/{t['id']}/comment", headers).get("comments", [])
+        counts = {}
+        for c in comments:
+            uid = str(c.get("user", {}).get("id", ""))
+            if uid in QA_TEAM:
+                counts[uid] = counts.get(uid, 0) + 1
+        if counts and max(counts, key=lambda u: counts[u]) == my_id:
+            my_rounds += rv
+        time.sleep(0.15)
+
+    return {
+        "generated_at": now.isoformat(),
+        "me": me,
+        "role": "QA",
+        "proys": sorted(proys),
+        "queue": queue,
+        "qa_total_sprint": qa_total_sprint,
+        "estancadas": estancadas,
+        "no_qa_inst": no_qa_inst,
+        "my_rounds": my_rounds,
+        "tracked_qa_h": round(tracked_qa_h, 1),
+    }
+
+
+def build_qa_report(d: dict, today_str: str) -> str:
+    R = []
+    me = d["me"]
+    cola = len(d["queue"])
+    cuello = cola > QA_QUEUE_MAX
+    R.append(f"# Mi Diagnóstico QA — {me['name']} — {today_str}")
+    R.append(f"## Cola de QA en el sprint activo · Proyectos: {', '.join(d['proys']) or '—'}")
+    R.append("")
+    R.append("---")
+    R.append("")
+
+    if cola == 0:
+        R.append("> No tienes tareas en estado `qa` asignadas a ti en el sprint activo "
+                 f"(hay {d['qa_total_sprint']} en QA en total). Si esperabas ver tu cola, "
+                 "revisa que las tareas en QA te tengan como **assignee**.")
+        R.append("")
+        R.append("---")
+        R.append("")
+
+    # Resumen
+    R.append("### Mi tablero QA")
+    R.append("")
+    R.append("```")
+    R.append(f"{'Indicador':<30} {'Tú':>8}  {'Meta':<10} {'Estado'}")
+    R.append("─" * 60)
+    R.append(f"{'Cola de QA (tareas a revisar)':<30} {cola:>8}  {'≤5':<10} {_mark(not cuello)}")
+    R.append(f"{'Estancadas en QA (>3d)':<30} {len(d['estancadas']):>8}  {'0':<10} {_mark(not d['estancadas'])}")
+    R.append(f"{'En cola sin QA Instructions':<30} {len(d['no_qa_inst']):>8}  {'0':<10} {_mark(not d['no_qa_inst'])}")
+    R.append(f"{'Hallazgos (rounds) generados':<30} {d['my_rounds']:>8}  {'—':<10} ℹ️")
+    R.append(f"{'Tiempo registrado en QA':<30} {d['tracked_qa_h']:>7.1f}h  {'—':<10} ℹ️")
+    R.append("```")
+    R.append("")
+    R.append("---")
+    R.append("")
+
+    # Detalle cola
+    R.append("### Mi cola de QA" + (" ⚠️ cuello de botella" if cuello else ""))
+    R.append("")
+    if d["queue"]:
+        R.append("```")
+        hh = f"{'ID':<11} {'Tarea':<34} {'Proy':<8} {'Días en QA':>11} {'QA Inst.':>9}"
+        R.append(hh)
+        R.append("─" * len(hh))
+        for q in d["queue"]:
+            R.append(f"{q['id']:<11} {_trunc(q['name']):<34} {q['proj']:<8} {q['days']:>10.1f}d {('sí' if q['has_qa'] else 'NO'):>9}")
+        R.append("```")
+    else:
+        R.append("Cola vacía. ✅")
+    R.append("")
+
+    # Sin QA Instructions (no testeable)
+    R.append("### En cola sin QA Instructions (no se pueden testear bien)")
+    R.append("")
+    if d["no_qa_inst"]:
+        R.append("Estas tareas están en tu cola pero no traen QA Instructions: conviene devolverlas al dev/Owner antes de revisar.")
+        R.append("")
+        R.append("```")
+        hh = f"{'ID':<11} {'Tarea':<34} {'Proy':<8}"
+        R.append(hh)
+        R.append("─" * len(hh))
+        for a in d["no_qa_inst"]:
+            R.append(f"{a['id']:<11} {_trunc(a['name']):<34} {a['proj']:<8}")
+        R.append("```")
+    else:
+        R.append("Todas tus tareas en cola tienen QA Instructions. ✅")
+    R.append("")
+
+    R.append(f"### Hallazgos y tiempo")
+    R.append("")
+    R.append(f"- **Hallazgos (rounds) generados:** {d['my_rounds']} — veces que devolviste tareas con observaciones (atribuido por comentarios).")
+    R.append(f"- **Tiempo registrado en QA:** {d['tracked_qa_h']}h en tareas de 'Revisión integral de QA'.")
+    R.append("")
+    R.append("---")
+    R.append("")
+    R.append("### Coaching — qué ajustar hoy")
+    R.append("")
+    R.append("<!-- AI:COACHING -->")
+    R.append("")
+    R.append("---")
+    R.append(f"*Generado el {today_str} por Dev-Check (vista QA). Corre con `--analyze` para el coaching AI.*")
+    return "\n".join(R)
+
+
+def build_qa_context(report_text: str, d: dict, today: str) -> str:
+    subset = {
+        "me": d["me"]["name"], "rol": "QA",
+        "cola_qa": len(d["queue"]),
+        "estancadas_qa": len(d["estancadas"]),
+        "sin_qa_instructions": len(d["no_qa_inst"]),
+        "hallazgos_rounds": d["my_rounds"],
+        "tiempo_qa_h": d["tracked_qa_h"],
+        "proys": d["proys"],
+    }
+    return "\n".join([
+        f"# Contexto de Coaching de QA — {d['me']['name']} — {today}",
+        "",
+        "## INSTRUCCIONES PARA EL MODELO",
+        "Eres un coach de QA. Lee los datos del tester y responde SOLO en español.",
+        "DEBES devolver EXACTAMENTE este formato:",
+        "```",
+        "[COACHING]",
+        "1. acción concreta y priorizada",
+        "2. acción concreta y priorizada",
+        "3. acción concreta y priorizada",
+        "[/COACHING]",
+        "```",
+        "Da entre 3 y 5 acciones enfocadas en QA (cola, estancadas, tareas sin QA Instructions). NO alteres datos numéricos.",
+        "",
+        "## MI REPORTE",
+        report_text,
+        "",
+        "## MIS MÉTRICAS (JSON)",
+        json.dumps(subset, indent=2, ensure_ascii=False),
+    ])
+
+
 def execute(now: datetime, headers: dict, config: dict, do_analyze: bool, dev_override: "dict | None" = None) -> None:
     today_str = now.strftime("%Y-%m-%d")
     if dev_override:
@@ -681,8 +871,16 @@ def execute(now: datetime, headers: dict, config: dict, do_analyze: bool, dev_ov
             sys.exit(1)
         print(f"Perfil detectado: {me['name']} (id {me['id']})")
 
-    d = analyze_me(now, headers, config, me)
-    report_text = build_report(d, today_str)
+    # Vista por rol: QA usa su cola (assignee); dev usa Owner.
+    if me["id"] in QA_IDS:
+        d = analyze_qa(now, headers, config, me)
+        report_text = build_qa_report(d, today_str)
+        make_ctx = build_qa_context
+    else:
+        d = analyze_me(now, headers, config, me)
+        report_text = build_report(d, today_str)
+        make_ctx = build_analysis_context
+
     report_path = ROOT / REPORT_NAME.format(date=today_str)
     report_path.write_text(report_text, encoding="utf-8")
     (ROOT / DATA_NAME.format(date=today_str)).write_text(
@@ -690,7 +888,7 @@ def execute(now: datetime, headers: dict, config: dict, do_analyze: bool, dev_ov
     print(f"Reporte generado: {report_path.name}")
 
     if do_analyze:
-        ctx_text = build_analysis_context(report_text, d, today_str)
+        ctx_text = make_ctx(report_text, d, today_str)
         (ROOT / ANALYSIS_CONTEXT_NAME).write_text(ctx_text, encoding="utf-8")
         run_ai_analysis(ctx_text, report_path)
     else:

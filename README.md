@@ -42,10 +42,26 @@ El reporte se imprime en pantalla y se guarda como `Mi_Reporte_YYYY-MM-DD.md`.
 | Tracking (horas gastadas / estimadas) | 70–120% |
 | Calidad (rounds de QA promedio) | ≤1.0 |
 | Estimación (tareas sin Sprint Points) | 0 |
-| Tiempo en estado (TO DO/IN PROGRESS ≤10d · QA ≤3d · Merge→Dev ≤3d) | 0 estancadas |
+| Tiempo en estado, **solo los estados que controlas** (TO DO/IN PROGRESS ≤10d · Merge→Dev ≤3d) | 0 estancadas |
 | Saturación (>15 tareas · >80h · 3+ proyectos) | sin señales |
 
 Cada dimensión sale con ✅ / ⚠️ y el detalle de las tareas que debes revisar.
+
+### Vista QA (perfiles de QA)
+
+Si el token es de un **QA tester** (Juan M. o José F.), la herramienta cambia a una vista por **cola de
+QA** (tareas en estado `qa` asignadas a ti, no por Owner) y muestra métricas propias de QA:
+
+| Indicador QA | Meta |
+|--------------|------|
+| Cola de QA (tareas a revisar) | ≤5 (si no, cuello de botella) |
+| Estancadas en QA (>3d esperando revisión) | 0 |
+| En cola **sin QA Instructions** (no se pueden testear bien → devolver al dev) | 0 |
+| Hallazgos (rounds) generados | informativo |
+| Tiempo registrado en "Revisión integral de QA" | informativo |
+
+El reporte de cada rol se mide solo en lo que esa persona controla: el dev no ve como "estancadas" las
+tareas que ya pasaron a QA, y el QA ve su cola en lugar de tareas por Owner.
 
 ## Privacidad
 
