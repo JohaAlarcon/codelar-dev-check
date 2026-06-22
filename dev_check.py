@@ -63,6 +63,18 @@ CF = {
     "PRIORITY": "970395ae-22be-45d1-952a-83e9269715b4",
 }
 
+# Roster del equipo — SOLO para el modo preview de manager (--dev). El dev normal se
+# auto-detecta por su token y NO necesita este roster. Son nombres + IDs de ClickUp (no secretos).
+TEAM = {
+    "89212278": "Omar G.",
+    "67211379": "Mario A.",
+    "67211381": "Diego D.",
+    "67211376": "Christian C.",
+    "67211378": "Damian L.",
+    "89342644": "Juan M.",
+    "156068535": "José F.",
+}
+
 STATUS_DONE = ["in sprint", "ready for deployment", "done", "closed", "merge to sprint"]
 STATUS_QA = ["qa"]
 STATUS_MERGE_DEV = ["merge to dev/test"]
@@ -232,6 +244,18 @@ def whoami(headers: dict) -> dict:
     return {"id": str(user.get("id", "")), "name": user.get("username") or user.get("email") or "Yo"}
 
 
+def resolve_dev(value: str) -> "dict | None":
+    """Resuelve --dev a un perfil. Acepta un ID numérico o un nombre (o parte) del roster TEAM."""
+    value = value.strip()
+    if value.isdigit():
+        return {"id": value, "name": TEAM.get(value, f"id {value}")}
+    low = value.lower()
+    for uid, name in TEAM.items():
+        if low in name.lower():
+            return {"id": uid, "name": name}
+    return None
+
+
 # ── Bloque AI (opcional) ──────────────────────────────────────────────────────
 _NOISE_PREFIXES = (
     "Keychain initialization", "Using FileKeychain", "Loaded cached credentials",
@@ -331,6 +355,7 @@ def analyze_me(now: datetime, headers: dict, config: dict, me: dict) -> dict:
     vencidas, no_doc, no_est = [], [], []
     rounds_vals = []
     tis_violators = []
+    inprogress_count = 0
 
     for t, pname in mine:
         st = t.get("status", {}).get("status", "").lower()
@@ -354,15 +379,18 @@ def analyze_me(now: datetime, headers: dict, config: dict, me: dict) -> dict:
         est_total += est_h
         gast_total += spent_h
 
-        # Vencidas (no terminadas)
-        if st not in STATUS_DONE:
+        # Sin estimar (in progress / to do, 0h)
+        if st not in STATUS_DONE and est_h == 0 and st in (STATUS_PROGRESS + STATUS_TODO):
+            no_est.append({"id": t["id"], "name": t["name"], "proj": pname, "status": t["status"]["status"]})
+
+        # Vencidas: solo tareas en 'in progress' (misma regla que el guardián)
+        if st in STATUS_PROGRESS:
+            inprogress_count += 1
             expired = float(get_cf_val(t, CF["EXPIRED"]) or 0)
             due = t.get("due_date")
             due_past = datetime.fromtimestamp(int(due) / 1000).date() <= today_local if due else False
             if expired > 0 or due_past:
                 vencidas.append({"id": t["id"], "name": t["name"], "proj": pname, "status": t["status"]["status"]})
-            if est_h == 0 and st in (STATUS_PROGRESS + STATUS_TODO):
-                no_est.append({"id": t["id"], "name": t["name"], "proj": pname, "status": t["status"]["status"]})
 
         # Documentación (en QA/Done/Merge→Dev)
         if st in STATUS_DONE or st in STATUS_QA or st in STATUS_MERGE_DEV:
@@ -391,9 +419,8 @@ def analyze_me(now: datetime, headers: dict, config: dict, me: dict) -> dict:
     doc_ok = doc_eligible - len(no_doc)
     doc_pct = _pct(doc_ok, doc_eligible)
 
-    # Plazos: % de vencidas sobre no-terminadas (0 cuando no hay no-terminadas)
-    nondone = pulso["total"] - pulso["done"]
-    venc_pct = (len(vencidas) / nondone * 100) if nondone else 0.0
+    # Plazos: % de vencidas sobre tareas en 'in progress' (0 si no hay en progreso)
+    venc_pct = (len(vencidas) / inprogress_count * 100) if inprogress_count else 0.0
 
     # Tracking
     ratio = (gast_total / est_total * 100) if est_total else 0.0
@@ -441,7 +468,7 @@ def analyze_me(now: datetime, headers: dict, config: dict, me: dict) -> dict:
         "gast_total": round(gast_total, 1),
         "ratio": round(ratio, 1),
         "doc": {"pct": round(doc_pct, 1), "ok": doc_ok, "eligible": doc_eligible, "offenders": no_doc},
-        "plazos": {"venc_pct": round(venc_pct, 1), "nondone": nondone, "vencidas": vencidas},
+        "plazos": {"venc_pct": round(venc_pct, 1), "inprogress": inprogress_count, "vencidas": vencidas},
         "estimacion": {"offenders": no_est},
         "calidad": {"avg_rounds": round(avg_rounds, 2), "n": len(rounds_vals)},
         "tis_violators": tis_violators,
@@ -534,7 +561,7 @@ def build_report(d: dict, today_str: str) -> str:
         R.append("Toda tu documentación está completa. ✅")
     R.append("")
 
-    R.append("#### Tareas vencidas")
+    R.append("#### Tareas vencidas (in progress)")
     R.append("")
     if plazos["vencidas"]:
         R.append("```")
@@ -632,13 +659,17 @@ def build_analysis_context(report_text: str, d: dict, today: str) -> str:
     ])
 
 
-def execute(now: datetime, headers: dict, config: dict, do_analyze: bool) -> None:
+def execute(now: datetime, headers: dict, config: dict, do_analyze: bool, dev_override: "dict | None" = None) -> None:
     today_str = now.strftime("%Y-%m-%d")
-    me = whoami(headers)
-    if not me["id"]:
-        print("ERROR: no se pudo detectar tu usuario desde el token. Revisa tu CLICKUP_API_KEY.", file=sys.stderr)
-        sys.exit(1)
-    print(f"Perfil detectado: {me['name']} (id {me['id']})")
+    if dev_override:
+        me = dev_override
+        print(f"Modo preview (manager): perfil {me['name']} (id {me['id']})")
+    else:
+        me = whoami(headers)
+        if not me["id"]:
+            print("ERROR: no se pudo detectar tu usuario desde el token. Revisa tu CLICKUP_API_KEY.", file=sys.stderr)
+            sys.exit(1)
+        print(f"Perfil detectado: {me['name']} (id {me['id']})")
 
     d = analyze_me(now, headers, config, me)
     report_text = build_report(d, today_str)
@@ -666,6 +697,8 @@ def main() -> None:
     parser.add_argument("--setup", action="store_true", help="Descubre y cachea sprints (config.json).")
     parser.add_argument("--validate", action="store_true", help="Valida API y perfil.")
     parser.add_argument("--analyze", action="store_true", help="Agrega coaching AI (más lento).")
+    parser.add_argument("--dev", default=None, metavar="NOMBRE|ID",
+                        help="Modo preview (manager): analiza el perfil de otro dev en vez del tuyo.")
     args = parser.parse_args()
 
     load_env(ROOT / ".env")
@@ -691,8 +724,15 @@ def main() -> None:
         print(f"Validación OK: API accesible, perfil {me['name']}.")
         return
 
+    dev_override = None
+    if args.dev:
+        dev_override = resolve_dev(args.dev)
+        if not dev_override:
+            print(f"ERROR: no reconozco al dev '{args.dev}'. Opciones: {', '.join(TEAM.values())}", file=sys.stderr)
+            sys.exit(2)
+
     config = ensure_config(now, headers, force=False)
-    execute(now, headers, config, do_analyze=args.analyze)
+    execute(now, headers, config, do_analyze=args.analyze, dev_override=dev_override)
 
 
 if __name__ == "__main__":

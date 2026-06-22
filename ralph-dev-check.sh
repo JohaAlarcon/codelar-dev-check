@@ -23,6 +23,7 @@ Uso: ./ralph-dev-check.sh [opciones]
 Opciones:
   (sin args)   Diagnóstico determinístico rápido (SIN AI) — recomendado para el día a día
   --analyze    Agrega coaching AI personalizado (usa gemini/claude, más lento)
+  --dev NOMBRE Modo preview (manager): analiza el perfil de otro dev en vez del tuyo
   --setup      Descubre y cachea los sprints activos (config.json)
   -h, --help   Muestra esta ayuda
 
@@ -30,6 +31,11 @@ Primera vez:
   cp .env.example .env     # y pon tu token personal de ClickUp en CLICKUP_API_KEY
   ./ralph-dev-check.sh --setup
   ./ralph-dev-check.sh
+
+Ejemplos:
+  ./ralph-dev-check.sh                      # tu diagnóstico (auto-detecta tu perfil)
+  ./ralph-dev-check.sh --analyze            # + coaching AI
+  ./ralph-dev-check.sh --dev "Damian L."    # preview de otro dev (solo manager)
 EOF
 }
 
@@ -75,18 +81,16 @@ run_check() {
 }
 
 main() {
-    local mode="${1:-}"
-    case "${mode}" in
-        ""|--run)   run_check ;;
-        --analyze)  run_check --analyze ;;
+    case "${1:-}" in
+        -h|--help)  usage ;;
         --setup)
             local PYTHON_CMD; PYTHON_CMD="$(find_python)" || die "Python 3.10+ no encontrado"
             if [[ -f "${SCRIPT_DIR}/.env" ]]; then set -a; source "${SCRIPT_DIR}/.env" 2>/dev/null || true; set +a; fi
             [[ -n "${CLICKUP_API_KEY:-}" ]] || die "CLICKUP_API_KEY no configurada."
             ${PYTHON_CMD} "${DEV_SCRIPT}" --setup
             ;;
-        -h|--help)  usage ;;
-        *)          error "Opción desconocida: ${mode}"; usage; exit 1 ;;
+        --run)      shift; run_check "$@" ;;
+        *)          run_check "$@" ;;   # reenvía --analyze / --dev "Nombre" al script
     esac
 }
 
