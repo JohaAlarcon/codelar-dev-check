@@ -1,0 +1,18 @@
+# Secretos — NUNCA commitear (repo público)
+.env
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Config y datos generados (se recrean en cada corrida)
+config.json
+mi_data_*.json
+analysis_context.md
+
+# Reportes personales generados
+Mi_Reporte_*.md
+
+# macOS
+.DS_Store
