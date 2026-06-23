@@ -24,14 +24,40 @@ cp .env.example .env
 ClickUp → tu avatar (abajo-izquierda) → **Settings** → **Apps** → **API Token** → **Generate**.
 Cópialo (empieza con `pk_`) y pégalo en tu archivo `.env`. **Nunca lo compartas ni lo subas a git** (`.env` ya está en `.gitignore`).
 
+### Cómo saber tu ID de ClickUp
+
+**Normalmente NO lo necesitas**: la herramienta te detecta sola a partir de tu token
+(verás `Perfil detectado: TuNombre (id 67211378)` al correrla). Ese número entre paréntesis **es tu ID**.
+
+Si quieres obtenerlo aparte (por ejemplo para verificar que te detecta bien), corre:
+
+```bash
+curl -s -H "Authorization: $CLICKUP_API_KEY" https://api.clickup.com/api/v2/user
+```
+
+En la respuesta, el campo `"id"` dentro de `"user"` es tu ID de desarrollador.
+
 ## Uso diario
 
 ```bash
-./ralph-dev-check.sh            # diagnóstico rápido (recomendado)
+./ralph-dev-check.sh            # diagnóstico rápido (recomendado) — te detecta por tu token
 ./ralph-dev-check.sh --analyze  # + coaching AI personalizado (necesita gemini o claude CLI)
 ```
 
 El reporte se imprime en pantalla y se guarda como `Mi_Reporte_YYYY-MM-DD.md`.
+
+### Usar tu ID explícitamente (opcional)
+
+Si la auto-detección no te identifica bien (p. ej. tu usuario de ClickUp no coincide con tu nombre),
+puedes pasar tu ID o tu nombre directamente con `--dev`:
+
+```bash
+./ralph-dev-check.sh --dev 67211378       # con tu ID
+./ralph-dev-check.sh --dev "Damian L."    # o con tu nombre
+```
+
+> Nota: `--dev` analiza el perfil indicado en vez del tuyo. Sirve para verificar tu propio ID o,
+> si eres líder/manager, para previsualizar el reporte de otra persona del equipo.
 
 ## Qué te muestra
 
