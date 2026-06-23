@@ -69,7 +69,13 @@ puedes pasar tu ID o tu nombre directamente con `--dev`:
 | Calidad (rounds de QA promedio) | ≤1.0 |
 | Estimación (tareas sin Sprint Points) | 0 |
 | Tiempo en estado, **solo los estados que controlas** (TO DO/IN PROGRESS ≤10d · Merge→Dev ≤3d) | 0 estancadas |
-| Saturación (>15 tareas · >80h · 3+ proyectos) | sin señales |
+| **Capacidad** (horas pendientes vs. disponibles en el sprint) | carga ≤ disponible |
+| Saturación (>15 tareas · 3+ proyectos) | sin señales |
+
+**Capacidad** se calcula igual que el guardián: `días hábiles restantes × 8h − reuniones prorrateadas`,
+donde los días hábiles son lunes-viernes **menos los festivos colombianos 2026**. Tu carga pendiente es la
+suma de `estimado − gastado` de tus tareas no-terminadas. Te dice cuántas horas te quedan disponibles vs.
+cuánto trabajo tienes por delante.
 
 Cada dimensión sale con ✅ / ⚠️ y el detalle de las tareas que debes revisar.
 

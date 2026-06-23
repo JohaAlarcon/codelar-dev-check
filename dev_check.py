@@ -25,7 +25,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 BASE_URL = "https://api.clickup.com/api/v2"
@@ -97,6 +97,14 @@ QA_IDS = set(QA_TEAM)
 DEV_TIS_MAX = {"to do": 10.0, "in progress": 10.0, "merge to dev/test": 3.0}
 QA_TIS_MAX = {"qa": 3.0}
 QA_QUEUE_MAX = 5            # cola de QA que indica cuello de botella
+# Capacidad real (igual que el guardián): días hábiles colombianos − reuniones.
+HOURS_PER_DAY = 8.0
+MEETING_HOURS_SPRINT = 50.0
+CO_HOLIDAYS_2026 = frozenset({
+    "2026-01-01", "2026-01-12", "2026-03-23", "2026-04-02", "2026-04-03", "2026-05-01",
+    "2026-05-18", "2026-06-08", "2026-06-15", "2026-06-29", "2026-07-20", "2026-08-07",
+    "2026-08-17", "2026-10-12", "2026-11-02", "2026-11-16", "2026-12-08", "2026-12-25",
+})
 SAT_TASKS = 15
 SAT_HOURS = 80.0
 SAT_PROJECTS = 3
@@ -341,6 +349,18 @@ def _mark(ok: bool) -> str:
     return "✅" if ok else "⚠️"
 
 
+def business_days(start: datetime, end: datetime) -> int:
+    """Días hábiles (L-V) entre start y end inclusive, descontando festivos CO 2026."""
+    if end < start:
+        return 0
+    d, last, count = start.date(), end.date(), 0
+    while d <= last:
+        if d.weekday() < 5 and d.isoformat() not in CO_HOLIDAYS_2026:
+            count += 1
+        d += timedelta(days=1)
+    return count
+
+
 # ── Análisis personal (determinístico) ────────────────────────────────────────
 def analyze_me(now: datetime, headers: dict, config: dict, me: dict) -> dict:
     my_id = me["id"]
@@ -361,6 +381,7 @@ def analyze_me(now: datetime, headers: dict, config: dict, me: dict) -> dict:
     pulso = {"total": 0, "done": 0, "qa": 0, "merge": 0, "prog": 0, "todo": 0, "blocked": 0}
     proys = set()
     est_total = gast_total = 0.0
+    load_remaining = 0.0   # Σ(estimado − gastado) de tareas no-terminadas
     vencidas, no_doc, no_est = [], [], []
     rounds_vals = []
     tis_violators = []
@@ -387,6 +408,8 @@ def analyze_me(now: datetime, headers: dict, config: dict, me: dict) -> dict:
         spent_h = float((t.get("time_spent") or 0) / 3600000.0)
         est_total += est_h
         gast_total += spent_h
+        if st not in STATUS_DONE:
+            load_remaining += max(0.0, est_h - spent_h)   # horas que aún te faltan
 
         # Sin estimar (in progress / to do, 0h)
         if st not in STATUS_DONE and est_h == 0 and st in (STATUS_PROGRESS + STATUS_TODO):
@@ -459,12 +482,20 @@ def analyze_me(now: datetime, headers: dict, config: dict, me: dict) -> dict:
                                   "status": t["status"]["status"], "days": days, "max": tis_max[st]})
     tis_violators.sort(key=lambda x: x["days"], reverse=True)
 
+    # Capacidad real: días hábiles colombianos restantes × 8h − reuniones prorrateadas
+    starts = [datetime.fromisoformat(p["active"]["start"]) for p in config["projects"].values()]
+    ends = [datetime.fromisoformat(p["active"]["end"]) for p in config["projects"].values()]
+    sprint_start = min(starts) if starts else now
+    sprint_end = max(ends) if ends else now
+    dias_totales = business_days(sprint_start, sprint_end)
+    dias_restantes = business_days(now, sprint_end)
+    capacidad = max(0.0, dias_restantes * HOURS_PER_DAY
+                    - MEETING_HOURS_SPRINT * (dias_restantes / dias_totales if dias_totales else 0.0))
+
     # Señales de saturación
     sat_reasons = []
     if pulso["total"] > SAT_TASKS:
         sat_reasons.append(f">{SAT_TASKS} tareas activas ({pulso['total']})")
-    if est_total > SAT_HOURS:
-        sat_reasons.append(f">{int(SAT_HOURS)}h estimadas ({est_total:.0f}h)")
     if len(proys) >= SAT_PROJECTS:
         sat_reasons.append(f"{len(proys)} proyectos simultáneos")
 
@@ -477,6 +508,10 @@ def analyze_me(now: datetime, headers: dict, config: dict, me: dict) -> dict:
         "pulso": pulso,
         "est_total": round(est_total, 1),
         "gast_total": round(gast_total, 1),
+        "load_remaining": round(load_remaining, 1),
+        "capacidad": round(capacidad, 1),
+        "dias_restantes": dias_restantes,
+        "dias_totales": dias_totales,
         "ratio": round(ratio, 1),
         "doc": {"pct": round(doc_pct, 1), "ok": doc_ok, "eligible": doc_eligible, "offenders": no_doc},
         "plazos": {"venc_pct": round(venc_pct, 1), "inprogress": inprogress_count, "vencidas": vencidas},
@@ -532,6 +567,7 @@ def build_report(d: dict, today_str: str) -> str:
     est_ok = not d["estimacion"]["offenders"]
     sat_ok = not d["saturacion"]
     tis_ok = not d["tis_violators"]
+    cap_ok = d["load_remaining"] <= d["capacidad"]
 
     R.append("### Cumplimiento del lineamiento")
     R.append("")
@@ -546,8 +582,14 @@ def build_report(d: dict, today_str: str) -> str:
     R.append(f"{'Calidad (rounds QA)':<26} {cal['avg_rounds']:>10.2f}  {'≤1.0':<12} {_mark(rounds_ok)}")
     R.append(f"{'Estimación (sin SP)':<26} {len(d['estimacion']['offenders']):>10}  {'0 tareas':<12} {_mark(est_ok)}")
     R.append(f"{'Tiempo en estado':<26} {len(d['tis_violators']):>10}  {'0 tareas':<12} {_mark(tis_ok)}")
+    cap_disp = f"{d['load_remaining']:.0f}/{d['capacidad']:.0f}h"
+    R.append(f"{'Capacidad (carga/disp.)':<26} {cap_disp:>10}  {'carga≤disp':<12} {_mark(cap_ok)}")
     R.append(f"{'Saturación':<26} {len(d['saturacion']):>10}  {'0 señales':<12} {_mark(sat_ok)}")
     R.append("```")
+    R.append("")
+    R.append(f"_Capacidad: te quedan **{d['capacidad']:.0f}h** disponibles "
+             f"({d['dias_restantes']} de {d['dias_totales']} días hábiles del sprint, L-V menos festivos CO, "
+             f"menos reuniones) y tienes **{d['load_remaining']:.0f}h** de trabajo pendiente._")
     R.append("")
     R.append("---")
     R.append("")
@@ -645,6 +687,8 @@ def build_analysis_context(report_text: str, d: dict, today: str) -> str:
         "avg_rounds": d["calidad"]["avg_rounds"],
         "sin_estimar": len(d["estimacion"]["offenders"]),
         "tareas_estancadas": len(d["tis_violators"]),
+        "capacidad_disp_h": d["capacidad"],
+        "carga_pendiente_h": d["load_remaining"],
         "saturacion": d["saturacion"],
         "proys": d["proys"],
     }
