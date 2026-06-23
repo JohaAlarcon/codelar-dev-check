@@ -681,6 +681,10 @@ def analyze_qa(now: datetime, headers: dict, config: dict, me: dict) -> dict:
     tracked_qa_h = 0.0
     proys = set()
     qa_total_sprint = 0
+    # Ventana del sprint por proyecto (para acotar los hallazgos a este sprint)
+    windows = {p: (datetime.fromisoformat(pc["active"]["start"]).date(),
+                   datetime.fromisoformat(pc["active"]["end"]).date())
+               for p, pc in config["projects"].items()}
 
     for pname, pconf in config["projects"].items():
         for t in fetch_all_tasks(pconf["active"]["id"], headers):
@@ -704,7 +708,7 @@ def analyze_qa(now: datetime, headers: dict, config: dict, me: dict) -> dict:
             rounds_raw = get_cf_val(t, CF["ROUNDS"]) or {}
             rounds_val = int((rounds_raw.get("current", 0) if isinstance(rounds_raw, dict) else rounds_raw) or 0)
             if rounds_val > 0:
-                tasks_with_rounds.append((t, rounds_val))
+                tasks_with_rounds.append((t, pname, rounds_val))
 
     # Días en QA para mi cola (time_in_status)
     tis = fetch_tis_bulk([q["id"] for q in queue], headers)
@@ -716,18 +720,30 @@ def analyze_qa(now: datetime, headers: dict, config: dict, me: dict) -> dict:
     queue.sort(key=lambda x: x["days"], reverse=True)
     estancadas = [q for q in queue if q["days"] > QA_TIS_MAX["qa"]]
 
-    # Hallazgos (rounds) atribuidos a mí: el QA con más comentarios en la tarea
+    # Hallazgos (rounds) atribuidos a mí, ACOTADOS al sprint: solo cuentan si mi
+    # comentario cae dentro de la ventana del sprint. El hallazgo mostrado es mi
+    # comentario más temprano en ventana (la devolución, no la re-validación).
     my_rounds = 0
-    for t, rv in tasks_with_rounds:
+    hallazgos = []
+    for t, pname, rv in tasks_with_rounds:
+        s_date, e_date = windows.get(pname, (None, None))
         comments = api_get(f"task/{t['id']}/comment", headers).get("comments", [])
-        counts = {}
+        by_qa = {}
         for c in comments:
             uid = str(c.get("user", {}).get("id", ""))
-            if uid in QA_TEAM:
-                counts[uid] = counts.get(uid, 0) + 1
-        if counts and max(counts, key=lambda u: counts[u]) == my_id:
+            if uid not in QA_TEAM:
+                continue
+            cdate = datetime.fromtimestamp(int(c.get("date", 0)) / 1000, tz=timezone.utc).date()
+            if s_date and e_date and s_date <= cdate <= e_date:
+                by_qa.setdefault(uid, []).append((cdate, (c.get("comment_text", "") or "").replace("\n", " ").strip()))
+        if by_qa and max(by_qa, key=lambda u: len(by_qa[u])) == my_id:
             my_rounds += rv
+            first_date, first_text = sorted(by_qa[my_id], key=lambda x: x[0])[0]
+            returned_to = TEAM.get(owner_id_of(t)) or "?"
+            hallazgos.append({"id": t["id"], "name": t["name"], "proj": pname,
+                              "returned_to": returned_to, "date": first_date.isoformat(), "comment": first_text})
         time.sleep(0.15)
+    hallazgos.sort(key=lambda h: h["date"])
 
     return {
         "generated_at": now.isoformat(),
@@ -739,6 +755,7 @@ def analyze_qa(now: datetime, headers: dict, config: dict, me: dict) -> dict:
         "estancadas": estancadas,
         "no_qa_inst": no_qa_inst,
         "my_rounds": my_rounds,
+        "hallazgos": hallazgos,
         "tracked_qa_h": round(tracked_qa_h, 1),
     }
 
@@ -810,10 +827,22 @@ def build_qa_report(d: dict, today_str: str) -> str:
         R.append("Todas tus tareas en cola tienen QA Instructions. ✅")
     R.append("")
 
-    R.append(f"### Hallazgos y tiempo")
+    R.append(f"### Hallazgos generados en el sprint ({d['my_rounds']})")
     R.append("")
-    R.append(f"- **Hallazgos (rounds) generados:** {d['my_rounds']} — veces que devolviste tareas con observaciones (atribuido por comentarios).")
-    R.append(f"- **Tiempo registrado en QA:** {d['tracked_qa_h']}h en tareas de 'Revisión integral de QA'.")
+    R.append("Solo cuentan los rounds cuyo comentario tuyo cae dentro de la ventana del sprint.")
+    R.append("")
+    if d["hallazgos"]:
+        R.append("```")
+        hh = f"{'Tarea':<30} {'Proy':<8} {'Devuelta a':<13} {'Fecha':<6} {'Hallazgo (tu comentario)'}"
+        R.append(hh)
+        R.append("─" * len(hh))
+        for h in d["hallazgos"]:
+            R.append(f"{_trunc(h['name'], 30):<30} {h['proj']:<8} {h['returned_to']:<13} {h['date'][5:]:<6} {h['comment'][:55]}")
+        R.append("```")
+    else:
+        R.append("Sin hallazgos atribuidos a ti dentro de la ventana del sprint.")
+    R.append("")
+    R.append(f"**Tiempo registrado en QA:** {d['tracked_qa_h']}h en tareas de 'Revisión integral de QA'.")
     R.append("")
     R.append("---")
     R.append("")

@@ -57,7 +57,7 @@ QA** (tareas en estado `qa` asignadas a ti, no por Owner) y muestra métricas pr
 | Cola de QA (tareas a revisar) | ≤5 (si no, cuello de botella) |
 | Estancadas en QA (>3d esperando revisión) | 0 |
 | En cola **sin QA Instructions** (no se pueden testear bien → devolver al dev) | 0 |
-| Hallazgos (rounds) generados | informativo |
+| Hallazgos (rounds) generados — **acotados al sprint**, con detalle de a quién se devolvió cada tarea | informativo |
 | Tiempo registrado en "Revisión integral de QA" | informativo |
 
 El reporte de cada rol se mide solo en lo que esa persona controla: el dev no ve como "estancadas" las
