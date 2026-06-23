@@ -582,14 +582,21 @@ def build_report(d: dict, today_str: str) -> str:
     R.append(f"{'Calidad (rounds QA)':<26} {cal['avg_rounds']:>10.2f}  {'≤1.0':<12} {_mark(rounds_ok)}")
     R.append(f"{'Estimación (sin SP)':<26} {len(d['estimacion']['offenders']):>10}  {'0 tareas':<12} {_mark(est_ok)}")
     R.append(f"{'Tiempo en estado':<26} {len(d['tis_violators']):>10}  {'0 tareas':<12} {_mark(tis_ok)}")
-    cap_disp = f"{d['load_remaining']:.0f}/{d['capacidad']:.0f}h"
-    R.append(f"{'Capacidad (carga/disp.)':<26} {cap_disp:>10}  {'carga≤disp':<12} {_mark(cap_ok)}")
+    margen = d["capacidad"] - d["load_remaining"]
+    R.append(f"{'Capacidad (margen libre)':<26} {f'{margen:.0f}h':>10}  {'≥ 0h':<12} {_mark(cap_ok)}")
     R.append(f"{'Saturación':<26} {len(d['saturacion']):>10}  {'0 señales':<12} {_mark(sat_ok)}")
     R.append("```")
     R.append("")
-    R.append(f"_Capacidad: te quedan **{d['capacidad']:.0f}h** disponibles "
-             f"({d['dias_restantes']} de {d['dias_totales']} días hábiles del sprint, L-V menos festivos CO, "
-             f"menos reuniones) y tienes **{d['load_remaining']:.0f}h** de trabajo pendiente._")
+    base = (f"({d['dias_restantes']} de {d['dias_totales']} días hábiles del sprint, "
+            f"L-V menos festivos CO, menos reuniones)")
+    if margen >= 0:
+        R.append(f"_Capacidad: **{margen:.0f}h libres** — tienes **{d['load_remaining']:.0f}h** de trabajo "
+                 f"pendiente y un cupo de **{d['capacidad']:.0f}h** en lo que queda del sprint {base}. "
+                 f"Puedes asumir ~{margen:.0f}h más._")
+    else:
+        R.append(f"_Capacidad: **sobrecargado por {abs(margen):.0f}h** — tienes **{d['load_remaining']:.0f}h** "
+                 f"pendientes pero solo **{d['capacidad']:.0f}h** de cupo en lo que queda del sprint {base}. "
+                 f"Hay que descargar ~{abs(margen):.0f}h._")
     R.append("")
     R.append("---")
     R.append("")
