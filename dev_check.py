@@ -29,6 +29,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 BASE_URL = "https://api.clickup.com/api/v2"
+BOGOTA = timezone(timedelta(hours=-5))  # Hora de Colombia (sin horario de verano)
 ROOT = Path(__file__).resolve().parent
 CONFIG_PATH = ROOT / "config.json"
 REPORT_NAME = "Mi_Reporte_{date}.md"
@@ -995,7 +996,7 @@ def main() -> None:
         print("ERROR: CLICKUP_API_KEY no configurada. Copia .env.example a .env y pon tu token.", file=sys.stderr)
         sys.exit(1)
     headers = {"Authorization": api_key, "Content-Type": "application/json"}
-    now = datetime.now(timezone.utc)
+    now = datetime.now(BOGOTA)
 
     if args.setup:
         config = discover_sprints(now, headers)
